@@ -1,0 +1,38 @@
+{
+  "@@locale": "en",
+  "appTitle": "DivisasCUP",
+  "comparatorTitle": "Currency Comparator",
+  "calculatorTitle": "Currency Calculator",
+  "comparatorSubtitle": "Compare currencies against a base",
+  "homeLabel": "Compare",
+  "calculatorLabel": "Calculator",
+  "baseCurrency": "Base currency",
+  "refresh": "Refresh",
+  "loadingRates": "Loading rates…",
+  "noRates": "No rates available for the selected base.",
+  "comparingFrom": "Comparing from {currency}",
+  "@comparingFrom": {
+    "placeholders": {
+      "currency": {
+        "type": "String"
+      }
+    }
+  },
+  "refreshSuccess": "Rates updated",
+  "loadError": "Couldn't load rates",
+  "from": "From",
+  "to": "To",
+  "swap": "Swap currencies",
+  "amount": "Amount",
+  "result": "Result",
+  "enterAmount": "Enter amount",
+  "convertError": "Couldn't convert",
+  "errorOccurred": "Something went wrong",
+  "footerHint": "Rates are local sample data for this phase.",
+  "priceLabel": "Price",
+  "cupPriceTitle": "CUP Price",
+  "historyTitle": "History",
+  "currentPrice": "Current price",
+  "lastWeek": "Last week",
+  "viewHistory": "View history"
+}
