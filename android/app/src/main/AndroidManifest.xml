@@ -1,4 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Required to reach the Supabase backend. Debug and profile builds
+         also declare this in their own manifests, but a release build only
+         merges this one, so without it the shipped app has no network at all. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="divisas_cup"
         android:name="${applicationName}"

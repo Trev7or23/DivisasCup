@@ -1,102 +1,320 @@
 import 'dart:io';
 
+import 'package:divisas_cup/core/domain/entities/cup_price_point.dart';
+import 'package:divisas_cup/core/domain/entities/currency.dart';
 import 'package:divisas_cup/core/errors/failure.dart';
 import 'package:divisas_cup/features/price_comparison/data/datasources/local_exchange_rate_data_source.dart';
-import 'package:divisas_cup/features/price_comparison/data/datasources/mock_exchange_rate_data_source.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 void main() {
   setUpAll(sqfliteFfiInit);
 
-  LocalExchangeRateDataSource buildSource({String? path}) =>
+  // `inMemoryDatabasePath` is NOT isolated under sqflite_common_ffi: it maps to
+  // one process-wide in-memory database, so state leaks between tests. Every
+  // test therefore gets its own throwaway file.
+  Future<String> newDbPath() async {
+    final dir = await Directory.systemTemp.createTemp('divisas_cup_test');
+    addTearDown(() => dir.delete(recursive: true));
+    return '${dir.path}/cache.db';
+  }
+
+  LocalExchangeRateDataSource sourceAt(String path) =>
       LocalExchangeRateDataSource(
-        seedSource: const MockExchangeRateDataSource(),
         factoryOverride: databaseFactoryFfi,
-        databasePath: path ?? inMemoryDatabasePath,
+        databasePath: path,
       );
 
+  Future<LocalExchangeRateDataSource> newSource() async =>
+      sourceAt(await newDbPath());
+
+  const cup = Currency(
+    code: 'CUP',
+    name: 'Cuban Peso',
+    symbol: r'$',
+    decimalDigits: 2,
+  );
+  const usd = Currency(
+    code: 'USD',
+    name: 'US Dollar',
+    symbol: r'$',
+    decimalDigits: 2,
+  );
+  const eur = Currency(
+    code: 'EUR',
+    name: 'Euro',
+    symbol: '€',
+    decimalDigits: 2,
+  );
+  const currencies = [cup, usd, eur];
+  const priceInCup = {'CUP': 1.0, 'USD': 720.0, 'EUR': 777.6};
+
+  List<CupPricePoint> series(int days) => [
+        for (var day = 0; day < days; day++)
+          CupPricePoint(
+            date: DateTime(2026, 1, 1).add(Duration(days: day)),
+            cupPerUsd: 720.0 + day,
+          ),
+      ];
+
   group('LocalExchangeRateDataSource', () {
-    test('seeds currencies and CUP anchors on first open', () async {
-      final source = buildSource();
+    test('starts empty: no seed, no cached data', () async {
+      final source = await newSource();
 
-      final currencies = await source.getSupportedCurrencies();
-      expect(currencies.map((c) => c.code), ['CUP', 'USD', 'MLC', 'EUR']);
-
-      expect(await source.getPriceInCup('CUP'), 1);
-      expect(await source.getPriceInCup('USD'), 720);
-      expect(await source.getPriceInCup('MLC'), 720);
-      expect(await source.getPriceInCup('EUR'), closeTo(777.6, 1e-9));
+      expect(await source.hasCachedData(), isFalse);
+      expect(await source.getSupportedCurrencies(), isEmpty);
+      expect(await source.getCupPriceHistory(), isEmpty);
     });
 
-    test('seeds the CUP price series and exposes current + history', () async {
-      final source = buildSource();
+    test('an empty cache reports RateNotFoundException, not silent zero',
+        () async {
+      final source = await newSource();
 
-      final history = await source.getCupPriceHistory();
-      expect(history, hasLength(90));
-      expect(history, orderedEquals(
-        [...history]..sort((a, b) => a.date.compareTo(b.date)),
-      ));
+      expect(
+        source.getPriceInCup('USD'),
+        throwsA(isA<RateNotFoundException>()),
+      );
+      expect(
+        source.getCurrentCupPrice(),
+        throwsA(isA<RateNotFoundException>()),
+      );
+    });
 
-      final current = await source.getCurrentCupPrice();
-      expect(current, history.last);
-      expect(current.cupPerUsd, closeTo(720, 1e-6));
+    test('replaceSnapshot stores currencies, anchors and series', () async {
+      final source = await newSource();
+
+      await source.replaceSnapshot(
+        currencies: currencies,
+        priceInCup: priceInCup,
+        series: series(3),
+      );
+
+      expect(await source.hasCachedData(), isTrue);
+      expect(
+        (await source.getSupportedCurrencies()).map((c) => c.code),
+        ['CUP', 'USD', 'EUR'],
+      );
+      expect(await source.getPriceInCup('CUP'), 1);
+      expect(await source.getPriceInCup('USD'), 720);
+      expect(await source.getPriceInCup('EUR'), closeTo(777.6, 1e-9));
+      expect(await source.getCupPriceHistory(), hasLength(3));
+    });
+
+    test('reads currencies back in stored display order', () async {
+      final source = await newSource();
+
+      await source.replaceSnapshot(
+        currencies: const [eur, cup, usd],
+        priceInCup: priceInCup,
+        series: series(1),
+      );
+
+      expect(
+        (await source.getSupportedCurrencies()).map((c) => c.code),
+        ['EUR', 'CUP', 'USD'],
+      );
+    });
+
+    test('replaceSnapshot drops the previous snapshot instead of merging',
+        () async {
+      final source = await newSource();
+      await source.replaceSnapshot(
+        currencies: currencies,
+        priceInCup: priceInCup,
+        series: series(5),
+      );
+
+      await source.replaceSnapshot(
+        currencies: const [cup],
+        priceInCup: const {'CUP': 1.0},
+        series: series(1),
+      );
+
+      expect(
+        (await source.getSupportedCurrencies()).map((c) => c.code),
+        ['CUP'],
+      );
+      expect(await source.getCupPriceHistory(), hasLength(1));
+      expect(
+        source.getPriceInCup('USD'),
+        throwsA(isA<RateNotFoundException>()),
+      );
+    });
+
+    test('replaceSnapshot is idempotent across repeated syncs', () async {
+      final source = await newSource();
+
+      for (var i = 0; i < 3; i++) {
+        await source.replaceSnapshot(
+          currencies: currencies,
+          priceInCup: priceInCup,
+          series: series(4),
+        );
+      }
+
+      expect(await source.getSupportedCurrencies(), hasLength(3));
+      expect(await source.getCupPriceHistory(), hasLength(4));
+    });
+
+    test('a failed replace rolls back and keeps the last good snapshot',
+        () async {
+      final source = await newSource();
+      await source.replaceSnapshot(
+        currencies: currencies,
+        priceInCup: priceInCup,
+        series: series(3),
+      );
+
+      // Duplicate `sampled_at` violates the cup_price_series primary key, so
+      // the batch fails after the currencies/rates deletes and inserts.
+      final duplicate = series(1).first;
+      await expectLater(
+        source.replaceSnapshot(
+          currencies: const [],
+          priceInCup: const {},
+          series: [duplicate, duplicate],
+        ),
+        throwsA(isA<DataSourceFailure>()),
+      );
+
+      expect(
+        (await source.getSupportedCurrencies()).map((c) => c.code),
+        ['CUP', 'USD', 'EUR'],
+      );
+      expect(await source.getCupPriceHistory(), hasLength(3));
+      expect(await source.getPriceInCup('USD'), 720);
+    });
+
+    test('a currency without an anchor fails the whole sync', () async {
+      final source = await newSource();
+
+      await expectLater(
+        source.replaceSnapshot(
+          currencies: currencies,
+          priceInCup: const {'CUP': 1.0, 'USD': 720.0},
+          series: series(1),
+        ),
+        throwsA(
+          isA<DataSourceFailure>().having(
+            (f) => f.message,
+            'message',
+            allOf(contains('EUR'), isNot(contains('USD'))),
+          ),
+        ),
+      );
+      expect(await source.getSupportedCurrencies(), isEmpty);
+      expect(await source.getCupPriceHistory(), isEmpty);
     });
 
     test('throws RateNotFoundException for unknown codes', () async {
-      final source = buildSource();
+      final source = await newSource();
+      await source.replaceSnapshot(
+        currencies: currencies,
+        priceInCup: priceInCup,
+        series: series(1),
+      );
+
       expect(
         source.getPriceInCup('XXX'),
         throwsA(isA<RateNotFoundException>()),
       );
     });
 
-    test('refresh inserts/updates today and re-anchors USD/MLC/EUR', () async {
-      final source = buildSource();
-      final before = await source.getCurrentCupPrice();
+    test('the snapshot survives closing and reopening the same file',
+        () async {
+      final path = await newDbPath();
 
-      final point = await source.refreshCupPrice();
-
-      expect(point.date, DateTime.now().dateTruncated);
-      expect(point.cupPerUsd,
-          closeTo(before.cupPerUsd, before.cupPerUsd * 0.03));
-
-      expect(await source.getPriceInCup('USD'), point.cupPerUsd);
-      expect(await source.getPriceInCup('MLC'), point.cupPerUsd);
-      expect(await source.getPriceInCup('EUR'),
-          closeTo(point.cupPerUsd * 1.08, 1e-9));
-
-      final history = await source.getCupPriceHistory();
-      expect(history.last.cupPerUsd, point.cupPerUsd);
-
-      await source.refreshCupPrice();
-      expect(await source.getCupPriceHistory(), hasLength(history.length));
-    });
-
-    test('does not duplicate the seed when the same file is reopened', () async {
-      final dir = await Directory.systemTemp.createTemp('divisas_cup_test');
-      addTearDown(() => dir.delete(recursive: true));
-      final path = '${dir.path}/seed.db';
-
-      final first = buildSource(path: path);
-      await first.getSupportedCurrencies();
+      final first = sourceAt(path);
+      await first.replaceSnapshot(
+        currencies: currencies,
+        priceInCup: priceInCup,
+        series: series(6),
+      );
       await first.close();
 
-      final second = buildSource(path: path);
-      final currencies = await second.getSupportedCurrencies();
-      expect(currencies, hasLength(4));
-      final history = await second.getCupPriceHistory();
-      expect(history, hasLength(90));
+      final second = sourceAt(path);
+      expect(await second.hasCachedData(), isTrue);
+      expect(await second.getSupportedCurrencies(), hasLength(3));
+      expect(await second.getCupPriceHistory(), hasLength(6));
       await second.close();
     });
 
-    test('upgrades a v1 database adding the series table', () async {
-      final dir = await Directory.systemTemp.createTemp('divisas_cup_test');
-      addTearDown(() => dir.delete(recursive: true));
-      final path = '${dir.path}/migrate.db';
+    test('upgrades a v2 database: anchors reset, price series preserved',
+        () async {
+      final path = await newDbPath();
 
-      final factory = databaseFactoryFfi;
-      final legacy = await factory.openDatabase(
+      final legacy = await databaseFactoryFfi.openDatabase(
+        path,
+        options: OpenDatabaseOptions(
+          version: 2,
+          onCreate: (db, _) async {
+            await db.execute('''
+              CREATE TABLE currencies (
+                code TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                decimal_digits INTEGER NOT NULL
+              )
+            ''');
+            await db.execute('''
+              CREATE TABLE exchange_rates (
+                base_code TEXT NOT NULL,
+                quote_code TEXT NOT NULL,
+                rate REAL NOT NULL,
+                updated_at INTEGER,
+                PRIMARY KEY (base_code, quote_code)
+              )
+            ''');
+            await db.execute('''
+              CREATE TABLE cup_price_series (
+                sampled_at INTEGER PRIMARY KEY,
+                cup_per_usd REAL NOT NULL
+              )
+            ''');
+            await db.insert('currencies', {
+              'code': 'MXN',
+              'name': 'Mexican Peso',
+              'symbol': r'MX$',
+              'decimal_digits': 2,
+            });
+            await db.insert('exchange_rates',
+                {'base_code': 'CUP', 'quote_code': 'MXN', 'rate': 24.0});
+            await db.insert('cup_price_series',
+                {'sampled_at': 1767225600000, 'cup_per_usd': 700.0});
+          },
+        ),
+      );
+      await legacy.close();
+
+      final source = sourceAt(path);
+
+      // Sample rows are dropped: the next sync refills them from the server.
+      expect(await source.getSupportedCurrencies(), isEmpty);
+      expect(await source.hasCachedData(), isFalse);
+      // The series itself is still valid data, so it is carried over.
+      expect(await source.getCupPriceHistory(), hasLength(1));
+      expect(
+        (await source.getCupPriceHistory()).single.cupPerUsd,
+        closeTo(700.0, 1e-9),
+      );
+
+      await source.replaceSnapshot(
+        currencies: currencies,
+        priceInCup: priceInCup,
+        series: series(2),
+      );
+      expect(
+        (await source.getSupportedCurrencies()).map((c) => c.code),
+        ['CUP', 'USD', 'EUR'],
+      );
+      expect(await source.getPriceInCup('USD'), 720);
+      await source.close();
+    });
+
+    test('upgrades a v1 database, creating the price series table', () async {
+      final path = await newDbPath();
+
+      final legacy = await databaseFactoryFfi.openDatabase(
         path,
         options: OpenDatabaseOptions(
           version: 1,
@@ -118,28 +336,29 @@ void main() {
                 PRIMARY KEY (base_code, quote_code)
               )
             ''');
-            await db.insert('currencies',
-                {'code': 'MXN', 'name': 'Mexican Peso', 'symbol': 'MX\$', 'decimal_digits': 2});
-            await db.insert('exchange_rates',
-                {'base_code': 'USD', 'quote_code': 'MXN', 'rate': 24.0});
+            await db.insert('currencies', {
+              'code': 'MXN',
+              'name': 'Mexican Peso',
+              'symbol': r'MX$',
+              'decimal_digits': 2,
+            });
           },
         ),
       );
       await legacy.close();
 
-      final source = buildSource(path: path);
-      final history = await source.getCupPriceHistory();
-      expect(history, hasLength(90));
+      final source = sourceAt(path);
 
-      final currencies = await source.getSupportedCurrencies();
-      expect(currencies.map((c) => c.code), ['CUP', 'USD', 'MLC', 'EUR']);
-      expect(await source.getPriceInCup('USD'), 720);
-      expect(await source.getPriceInCup('EUR'), closeTo(777.6, 1e-9));
+      expect(await source.getSupportedCurrencies(), isEmpty);
+      expect(await source.getCupPriceHistory(), isEmpty);
+
+      await source.replaceSnapshot(
+        currencies: currencies,
+        priceInCup: priceInCup,
+        series: series(2),
+      );
+      expect(await source.getCupPriceHistory(), hasLength(2));
       await source.close();
     });
   });
-}
-
-extension on DateTime {
-  DateTime get dateTruncated => DateTime(year, month, day);
 }

@@ -7,6 +7,11 @@ void main() {
   group('MockExchangeRateDataSource', () {
     const source = MockExchangeRateDataSource();
 
+    test('reports cached data (unlike the real cache, it always answers)',
+        () async {
+      expect(await source.hasCachedData(), isTrue);
+    });
+
     test('exposes the seeded currencies in order', () async {
       final currencies = await source.getSupportedCurrencies();
       expect(

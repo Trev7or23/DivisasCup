@@ -4,4 +4,9 @@
          to allow setting breakpoints, to provide hot reload, etc.
     -->
     <uses-permission android:name="android.permission.INTERNET"/>
+
+    <!-- Debug-only: the local Supabase stack is plain HTTP, which Android
+         blocks by default (API 28+). Declared here so it is merged only into
+         debug builds — release and profile keep the default HTTPS-only policy. -->
+    <application android:usesCleartextTraffic="true" />
 </manifest>

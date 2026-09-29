@@ -39,16 +39,6 @@ void main() {
       expect(provider.usdCurrency?.code, 'USD');
     });
 
-    test('refresh reports success and reloads', () async {
-      final provider =
-          CupPriceProvider(repository: FakeExchangeRateRepository());
-      await provider.load();
-
-      final ok = await provider.refresh();
-      expect(ok, isTrue);
-      expect(provider.error, isNull);
-    });
-
     test('surfaces failures and keeps the loading flag false', () async {
       final provider = CupPriceProvider(
         repository: FakeExchangeRateRepository(failOnSeries: true),

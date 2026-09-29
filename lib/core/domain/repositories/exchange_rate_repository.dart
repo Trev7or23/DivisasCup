@@ -5,9 +5,14 @@ import '../entities/exchange_rate.dart';
 /// Contract the presentation and use-case layers depend on.
 ///
 /// Implementations live in each feature's `data/` layer. Swapping the backend
-/// (SQLite today, Supabase later) only changes which implementation is wired
-/// in `main.dart`; nothing else in the app needs to change.
+/// only changes which implementation is wired in `main.dart`; nothing else in
+/// the app needs to change.
 abstract interface class ExchangeRateRepository {
+  /// Whether a sync has ever landed, i.e. whether [getSupportedCurrencies]
+  /// would return anything. Lets the app tell "never synced" apart from
+  /// "synced but offline" on a first run with no network.
+  Future<bool> hasCachedData();
+
   Future<List<Currency>> getSupportedCurrencies();
 
   Future<ExchangeRate> getRate({
@@ -23,7 +28,4 @@ abstract interface class ExchangeRateRepository {
 
   /// Full CUP price series, oldest first.
   Future<List<CupPricePoint>> getCupPriceHistory();
-
-  /// Appends (or updates) today's CUP price point and returns it.
-  Future<CupPricePoint> refreshCupPrice();
 }

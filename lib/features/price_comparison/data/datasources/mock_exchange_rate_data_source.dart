@@ -4,10 +4,16 @@ import '../../../../core/domain/entities/currency.dart';
 import '../../../../core/errors/failure.dart';
 import 'exchange_rate_data_source.dart';
 
-/// In-memory, synchronous-free fake source used for dev, widget tests and as
-/// the seed provider for the SQLite source on first launch.
+/// In-memory fake source for tests and previews.
+///
+/// It is **not** a production fallback: nothing in `lib/` reads it, and the
+/// local SQLite cache deliberately starts empty so a first run with no network
+/// surfaces the problem instead of quietly showing invented numbers.
 class MockExchangeRateDataSource implements ExchangeRateDataSource {
   const MockExchangeRateDataSource();
+
+  @override
+  Future<bool> hasCachedData() async => true;
 
   @override
   Future<List<Currency>> getSupportedCurrencies() async =>
@@ -38,7 +44,4 @@ class MockExchangeRateDataSource implements ExchangeRateDataSource {
   @override
   Future<List<CupPricePoint>> getCupPriceHistory() async =>
       FakeRates.series();
-
-  @override
-  Future<CupPricePoint> refreshCupPrice() async => FakeRates.series().last;
 }

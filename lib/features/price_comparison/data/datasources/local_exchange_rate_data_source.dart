@@ -1,6 +1,5 @@
 import 'package:sqflite/sqflite.dart';
 
-import '../../../../core/constants/fake_rates.dart';
 import '../../../../core/domain/entities/cup_price_point.dart';
 import '../../../../core/domain/entities/currency.dart';
 import '../../../../core/errors/failure.dart';
@@ -8,30 +7,25 @@ import '../models/cup_price_point_model.dart';
 import '../models/currency_model.dart';
 import 'exchange_rate_data_source.dart';
 
-/// SQLite-backed source of truth once the app has launched at least once.
+/// SQLite mirror of the Supabase tables: a local cache, never a seed.
 ///
-/// - Creates three tables (`currencies`, `exchange_rates`, `cup_price_series`)
-///   on first open and **seeds them** from [seedSource], so the app is fully
-///   functional offline from the very first run.
-/// - `cup_price_series` seeds a deterministic ~90-day CUP-price history
-///   (how many CUP one USD buys each day).
-/// - The database is opened lazily on the first read and then cached.
-/// - Injectable [DatabaseFactory]/path make unit tests run with an in-memory
-///   FFI database (no device or plugin needed).
+/// The database is created **empty** — there is no fallback data, so a first
+/// run with no network has nothing to show and must report it. [replaceSnapshot]
+/// is the only writer: every sync drops the previous contents and stores the
+/// fresh ones in a single transaction, so a sync that dies part-way through
+/// leaves the last good snapshot intact. Reads are served exclusively from this
+/// cache, so no screen ever waits on the network.
+///
+/// Injectable [factoryOverride]/[databasePath] let unit tests run against an
+/// in-memory FFI database instead of the platform plugin.
 class LocalExchangeRateDataSource implements ExchangeRateDataSource {
   LocalExchangeRateDataSource({
-    required this.seedSource,
     this.factoryOverride,
     this.databasePath,
   });
 
   static const String _dbFileName = 'divisas_cup.db';
-  static const int _dbVersion = 2;
-  static const String _cupCode = 'CUP';
-  static const double _eurToUsdFactor = 1.08;
-
-  /// Source consulted on first launch to populate the SQLite seed tables.
-  final ExchangeRateDataSource seedSource;
+  static const int _dbVersion = 3;
 
   /// Used by tests to point at an in-memory FFI factory instead of the
   /// platform plugin.
@@ -61,42 +55,48 @@ class LocalExchangeRateDataSource implements ExchangeRateDataSource {
   }
 
   Future<void> _onCreate(Database db, int version) async {
-    await _createTables(db);
-    await _seed(db);
+    await _createCurrencies(db);
+    await _createRates(db);
+    await _createSeries(db);
   }
 
+  /// v1 had no `cup_price_series`; v2 had it but no `sort_order` and stored
+  /// anchors in `exchange_rates(base_code, quote_code, rate)`. Both jump
+  /// straight to v3, which mirrors the Supabase schema one-to-one. Existing
+  /// rows are dropped rather than migrated: they were sample data, and the next
+  /// sync refills the cache from the server anyway.
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    if (oldVersion < 2) {
-      await db.execute('''
-        CREATE TABLE cup_price_series (
-          sampled_at INTEGER PRIMARY KEY,
-          cup_per_usd REAL NOT NULL
-        )
-      ''');
-      await db.delete('currencies');
-      await db.delete('exchange_rates');
-      await _seed(db);
-    }
+    if (oldVersion >= _dbVersion) return;
+    if (oldVersion < 2) await _createSeries(db);
+    await db.execute('DROP TABLE IF EXISTS exchange_rates');
+    await db.execute('DROP TABLE IF EXISTS currencies');
+    await _createCurrencies(db);
+    await _createRates(db);
   }
 
-  Future<void> _createTables(Database db) async {
+  Future<void> _createCurrencies(Database db) async {
     await db.execute('''
       CREATE TABLE currencies (
         code TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         symbol TEXT NOT NULL,
-        decimal_digits INTEGER NOT NULL
+        decimal_digits INTEGER NOT NULL,
+        sort_order INTEGER NOT NULL
       )
     ''');
+  }
+
+  Future<void> _createRates(Database db) async {
     await db.execute('''
-      CREATE TABLE exchange_rates (
-        base_code TEXT NOT NULL,
-        quote_code TEXT NOT NULL,
-        rate REAL NOT NULL,
-        updated_at INTEGER,
-        PRIMARY KEY (base_code, quote_code)
+      CREATE TABLE rates (
+        quote_code TEXT PRIMARY KEY,
+        price_in_cup REAL NOT NULL,
+        cached_at INTEGER
       )
     ''');
+  }
+
+  Future<void> _createSeries(Database db) async {
     await db.execute('''
       CREATE TABLE cup_price_series (
         sampled_at INTEGER PRIMARY KEY,
@@ -105,42 +105,22 @@ class LocalExchangeRateDataSource implements ExchangeRateDataSource {
     ''');
   }
 
-  Future<void> _seed(Database db) async {
-    final currencies = await seedSource.getSupportedCurrencies();
-    final batch = db.batch();
-    for (final currency in currencies) {
-      final price = await seedSource.getPriceInCup(currency.code);
-      batch.insert(
-        'currencies',
-        CurrencyModel.fromEntity(currency).toMap(),
-      );
-      batch.insert('exchange_rates', {
-        'base_code': _cupCode,
-        'quote_code': currency.code,
-        'rate': price,
-        'updated_at': DateTime.now().millisecondsSinceEpoch,
-      });
+  @override
+  Future<bool> hasCachedData() async {
+    final db = await _open();
+    try {
+      final rows = await db.rawQuery('SELECT COUNT(*) AS total FROM currencies');
+      return (rows.first['total']! as int) > 0;
+    } catch (error) {
+      throw _asFailure(error, 'Could not inspect the local cache');
     }
-    await batch.commit(noResult: true);
-    await _seedSeries(db);
-  }
-
-  Future<void> _seedSeries(Database db) async {
-    final batch = db.batch();
-    for (final point in FakeRates.series()) {
-      batch.insert(
-        'cup_price_series',
-        CupPricePointModel.fromPoint(point).toMap(),
-      );
-    }
-    await batch.commit(noResult: true);
   }
 
   @override
   Future<List<Currency>> getSupportedCurrencies() async {
     final db = await _open();
     try {
-      final rows = await db.query('currencies');
+      final rows = await db.query('currencies', orderBy: 'sort_order');
       return rows.map(CurrencyModel.fromMap).toList();
     } catch (error) {
       throw _asFailure(error, 'Could not read currencies');
@@ -152,9 +132,10 @@ class LocalExchangeRateDataSource implements ExchangeRateDataSource {
     final db = await _open();
     try {
       final rows = await db.query(
-        'exchange_rates',
-        where: 'base_code = ? AND quote_code = ?',
-        whereArgs: [_cupCode, currencyCode],
+        'rates',
+        columns: ['price_in_cup'],
+        where: 'quote_code = ?',
+        whereArgs: [currencyCode],
         limit: 1,
       );
       if (rows.isEmpty) {
@@ -162,7 +143,7 @@ class LocalExchangeRateDataSource implements ExchangeRateDataSource {
           'No CUP anchor rate for "$currencyCode"',
         );
       }
-      return (rows.first['rate'] as num).toDouble();
+      return (rows.first['price_in_cup']! as num).toDouble();
     } on Failure {
       rethrow;
     } catch (error) {
@@ -203,54 +184,69 @@ class LocalExchangeRateDataSource implements ExchangeRateDataSource {
     }
   }
 
-  @override
-  Future<CupPricePoint> refreshCupPrice() async {
+  /// Replaces the entire cache with [currencies], [priceInCup] and [series] in
+  /// one transaction.
+  ///
+  /// The deletes and the inserts commit together, so a failure part-way
+  /// through rolls the whole thing back and the previous snapshot survives.
+  ///
+  /// [currencies] arrives in display order and its position becomes the stored
+  /// `sort_order` (1-based, mirroring the server's own ordering), which is what
+  /// [getSupportedCurrencies] reads back. Every entry needs a price in
+  /// [priceInCup]: a currency without an anchor is a data-integrity problem, so
+  /// it fails the entire sync rather than silently shrinking the list.
+  ///
+  /// `cached_at` records when *this app* stored the row. It is deliberately not
+  /// the server's `rates.updated_at` (when the rate last changed upstream):
+  /// conflating the two would make a stale-looking row look fresh, and nothing
+  /// reads the column yet.
+  ///
+  /// Inserts use the default conflict strategy on purpose — a duplicated code
+  /// from the server should abort the sync, not let the last row win quietly.
+  Future<void> replaceSnapshot({
+    required List<Currency> currencies,
+    required Map<String, double> priceInCup,
+    required List<CupPricePoint> series,
+  }) async {
+    final missing = [
+      for (final currency in currencies)
+        if (!priceInCup.containsKey(currency.code)) currency.code,
+    ];
+    if (missing.isNotEmpty) {
+      throw DataSourceFailure('Missing CUP anchor for: ${missing.join(', ')}');
+    }
+
     final db = await _open();
+    final now = DateTime.now().millisecondsSinceEpoch;
     try {
-      final current = await getCurrentCupPrice();
-      final now = DateTime.now();
-      final today = DateTime(now.year, now.month, now.day);
-      // Calendar-anchored day index (UTC midnight of the same day), so the
-      // deterministic jitter never collides across a DST transition.
-      final dayNum =
-          DateTime.utc(today.year, today.month, today.day)
-              .millisecondsSinceEpoch ~/ 86400000;
-      final sign = dayNum.isEven ? 1.0 : -1.0;
-      final pct = 0.005 + (dayNum % 3) * 0.005;
-      final next = (current.cupPerUsd * (1 + sign * pct)).clamp(1.0, 100000.0);
-      final point = CupPricePoint(date: today, cupPerUsd: next);
+      await db.transaction((txn) async {
+        await txn.delete('currencies');
+        await txn.delete('rates');
+        await txn.delete('cup_price_series');
 
-      await db.insert(
-        'cup_price_series',
-        CupPricePointModel.fromPoint(point).toMap(),
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-
-      final batch = db.batch();
-      batch.update(
-        'exchange_rates',
-        {'rate': next},
-        where: 'base_code = ? AND quote_code = ?',
-        whereArgs: [_cupCode, 'USD'],
-      );
-      batch.update(
-        'exchange_rates',
-        {'rate': next},
-        where: 'base_code = ? AND quote_code = ?',
-        whereArgs: [_cupCode, 'MLC'],
-      );
-      batch.update(
-        'exchange_rates',
-        {'rate': next * _eurToUsdFactor},
-        where: 'base_code = ? AND quote_code = ?',
-        whereArgs: [_cupCode, 'EUR'],
-      );
-      await batch.commit(noResult: true);
-      return point;
-    } on Failure {
-      rethrow;
+        final batch = txn.batch();
+        for (var index = 0; index < currencies.length; index++) {
+          final currency = currencies[index];
+          batch.insert(
+            'currencies',
+            CurrencyModel.fromEntity(currency).toMap(sortOrder: index + 1),
+          );
+          batch.insert('rates', {
+            'quote_code': currency.code,
+            'price_in_cup': priceInCup[currency.code],
+            'cached_at': now,
+          });
+        }
+        for (final point in series) {
+          batch.insert(
+            'cup_price_series',
+            CupPricePointModel.fromPoint(point).toMap(),
+          );
+        }
+        await batch.commit(noResult: true);
+      });
     } catch (error) {
-      throw _asFailure(error, 'Could not refresh CUP price');
+      throw _asFailure(error, 'Could not store the rates snapshot');
     }
   }
 

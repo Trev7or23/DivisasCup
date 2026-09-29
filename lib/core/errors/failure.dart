@@ -29,6 +29,13 @@ class UnexpectedFailure extends Failure {
   const UnexpectedFailure(super.message);
 }
 
+/// Build-time configuration is missing or unsafe. Fatal: it is thrown in
+/// `main()` before the app renders, so it never reaches the UI as a
+/// localized message.
+class ConfigFailure extends Failure {
+  const ConfigFailure(super.message);
+}
+
 /// Normalizes any thrown object into a [Failure] for presentation.
 Failure failureFrom(Object error) {
   if (error is Failure) return error;

@@ -35,30 +35,22 @@ class AppSnackBar {
   }
 
   static SnackBar _build(String message, AppSnackBarType type) {
-    late final IconData icon;
-    late final Color color;
-
-    if (type == AppSnackBarType.success) {
-      icon = Icons.check_circle_outlined;
-      color = const Color(0xFF2E7D32);
-    }
-
-    if (type == AppSnackBarType.error) {
-      icon = Icons.error_outline;
-      color = const Color(0xFFC62828);
-    } else {
-      icon = Icons.info_outline;
-      color = const Color(0xFF1565C0);
-    }
-
+    final (icon, color) = switch (type) {
+      AppSnackBarType.success => (
+        Icons.check_circle_outline,
+        const Color(0xFF2E7D32),
+      ),
+      AppSnackBarType.error => (Icons.error_outline, const Color(0xFFC62828)),
+      AppSnackBarType.info => (Icons.info_outline, const Color(0xFF1565C0)),
+    };
     return SnackBar(
       behavior: SnackBarBehavior.floating,
       backgroundColor: color,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       content: Row(
-        spacing: 12,
         children: [
           Icon(icon, color: Colors.white),
+          const SizedBox(width: 12),
           Expanded(
             child: Text(message, style: const TextStyle(color: Colors.white)),
           ),

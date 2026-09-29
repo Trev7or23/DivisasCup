@@ -17,6 +17,17 @@ class ExchangeRateRepositoryImpl implements ExchangeRateRepository {
   final ExchangeRateDataSource dataSource;
 
   @override
+  Future<bool> hasCachedData() async {
+    try {
+      return await dataSource.hasCachedData();
+    } on Failure {
+      rethrow;
+    } catch (error) {
+      throw DataSourceFailure('Could not inspect the local cache ($error)');
+    }
+  }
+
+  @override
   Future<List<Currency>> getSupportedCurrencies() async {
     try {
       return await dataSource.getSupportedCurrencies();
@@ -93,17 +104,6 @@ class ExchangeRateRepositoryImpl implements ExchangeRateRepository {
       rethrow;
     } catch (error) {
       throw DataSourceFailure('Could not read CUP price history ($error)');
-    }
-  }
-
-  @override
-  Future<CupPricePoint> refreshCupPrice() async {
-    try {
-      return await dataSource.refreshCupPrice();
-    } on Failure {
-      rethrow;
-    } catch (error) {
-      throw DataSourceFailure('Could not refresh CUP price ($error)');
     }
   }
 }

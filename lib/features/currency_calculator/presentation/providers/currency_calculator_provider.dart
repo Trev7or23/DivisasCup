@@ -23,7 +23,7 @@ class CurrencyCalculatorProvider extends ChangeNotifier {
   List<Currency> _currencies = const [];
   Currency? _from;
   Currency? _to;
-  double _amount = 10;
+  double _amount = 1;
   ExchangeRate? _rate;
   bool _isLoading = true;
   Failure? _error;

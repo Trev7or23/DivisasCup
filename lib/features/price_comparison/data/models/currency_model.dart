@@ -24,10 +24,14 @@ class CurrencyModel extends Currency {
         decimalDigits: map['decimal_digits'] as int? ?? 2,
       );
 
-  Map<String, Object?> toMap() => {
+  /// [sortOrder] is 1-based display position, mirroring the server's own
+  /// ordering. It is written but not read back: [fromMap] deliberately ignores
+  /// it because `getSupportedCurrencies` already sorts by that column.
+  Map<String, Object?> toMap({required int sortOrder}) => {
         'code': code,
         'name': name,
         'symbol': symbol,
         'decimal_digits': decimalDigits,
+        'sort_order': sortOrder,
       };
 }

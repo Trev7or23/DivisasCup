@@ -47,22 +47,6 @@ class CupPriceProvider extends ChangeNotifier {
     }
   }
 
-  /// Appends today's point and reloads. Returns `true` on success so the page
-  /// can show the matching snack bar.
-  Future<bool> refresh() async {
-    _error = null;
-    notifyListeners();
-    try {
-      await _repository.refreshCupPrice();
-      await _fetch();
-      return true;
-    } catch (error) {
-      _error = failureFrom(error);
-      notifyListeners();
-      return false;
-    }
-  }
-
   Future<void> _fetch() async {
     _currencies = await _repository.getSupportedCurrencies();
     _history = await _repository.getCupPriceHistory();

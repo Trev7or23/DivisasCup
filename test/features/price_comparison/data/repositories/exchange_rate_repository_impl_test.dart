@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:divisas_cup/core/domain/entities/cup_price_point.dart';
 import 'package:divisas_cup/core/domain/entities/currency.dart';
 import 'package:divisas_cup/core/errors/failure.dart';
@@ -15,6 +17,30 @@ const eur = Currency(code: 'EUR', name: 'Euro', symbol: r'€');
 
 void main() {
   setUpAll(sqfliteFfiInit);
+
+  // `inMemoryDatabasePath` is process-wide under sqflite_common_ffi, so a
+  // throwaway file per test is the only way to keep these isolated.
+  Future<LocalExchangeRateDataSource> seededSource() async {
+    final dir = await Directory.systemTemp.createTemp('divisas_cup_repo_test');
+    addTearDown(() => dir.delete(recursive: true));
+    final source = LocalExchangeRateDataSource(
+      factoryOverride: databaseFactoryFfi,
+      databasePath: '${dir.path}/cache.db',
+    );
+    addTearDown(source.close);
+    await source.replaceSnapshot(
+      currencies: const [cup, usd, mlc, eur],
+      priceInCup: const {'CUP': 1.0, 'USD': 720.0, 'MLC': 720.0, 'EUR': 777.6},
+      series: [
+        for (var day = 0; day < 3; day++)
+          CupPricePoint(
+            date: DateTime(2026, 1, 1).add(Duration(days: day)),
+            cupPerUsd: 720.0,
+          ),
+      ],
+    );
+    return source;
+  }
 
   group('ExchangeRateRepositoryImpl', () {
     test('derives direct and cross rates from CUP anchors (mock source)',
@@ -38,14 +64,7 @@ void main() {
 
     test('lists each non-base currency when given a base (local source)',
         () async {
-      final local = LocalExchangeRateDataSource(
-        seedSource: const MockExchangeRateDataSource(),
-        factoryOverride: databaseFactoryFfi,
-        databasePath: inMemoryDatabasePath,
-      );
-      addTearDown(local.close);
-
-      final repo = ExchangeRateRepositoryImpl(dataSource: local);
+      final repo = ExchangeRateRepositoryImpl(dataSource: await seededSource());
       final rates = await repo.getRatesForBase(usd);
 
       expect(rates, hasLength(3));
@@ -59,18 +78,41 @@ void main() {
     });
 
     test('exposes the CUP price series', () async {
-      final repo = ExchangeRateRepositoryImpl(
-        dataSource: const MockExchangeRateDataSource(),
-      );
+      final repo = ExchangeRateRepositoryImpl(dataSource: await seededSource());
 
-      final history = await repo.getCupPriceHistory();
-      expect(history, hasLength(90));
-      expect((await repo.getCurrentCupPrice()).cupPerUsd, closeTo(720, 1e-6));
-      expect((await repo.refreshCupPrice()).cupPerUsd, closeTo(720, 1e-6));
+      expect(await repo.getCupPriceHistory(), hasLength(3));
+      expect(
+        (await repo.getCurrentCupPrice()).cupPerUsd,
+        closeTo(720, 1e-6),
+      );
+    });
+
+    test('hasCachedData is false before a sync and true after', () async {
+      final dir = await Directory.systemTemp.createTemp('divisas_cup_repo_test');
+      addTearDown(() => dir.delete(recursive: true));
+      final source = LocalExchangeRateDataSource(
+        factoryOverride: databaseFactoryFfi,
+        databasePath: '${dir.path}/cache.db',
+      );
+      addTearDown(source.close);
+      final repo = ExchangeRateRepositoryImpl(dataSource: source);
+
+      expect(await repo.hasCachedData(), isFalse);
+
+      await source.replaceSnapshot(
+        currencies: const [cup, usd],
+        priceInCup: const {'CUP': 1.0, 'USD': 720.0},
+        series: const [],
+      );
+      expect(await repo.hasCachedData(), isTrue);
     });
 
     test('wraps raw backend errors into DataSourceFailure', () async {
       final repo = ExchangeRateRepositoryImpl(dataSource: _ThrowingSource());
+      expect(
+        repo.hasCachedData(),
+        throwsA(isA<DataSourceFailure>()),
+      );
       expect(
         repo.getSupportedCurrencies(),
         throwsA(isA<DataSourceFailure>()),
@@ -97,6 +139,9 @@ void main() {
 
 class _ThrowingSource implements ExchangeRateDataSource {
   @override
+  Future<bool> hasCachedData() async => throw StateError('boom');
+
+  @override
   Future<List<Currency>> getSupportedCurrencies() async =>
       throw StateError('boom');
 
@@ -110,12 +155,12 @@ class _ThrowingSource implements ExchangeRateDataSource {
   @override
   Future<List<CupPricePoint>> getCupPriceHistory() async =>
       throw StateError('boom');
-
-  @override
-  Future<CupPricePoint> refreshCupPrice() async => throw StateError('boom');
 }
 
 class _UnknownCodeSource implements ExchangeRateDataSource {
+  @override
+  Future<bool> hasCachedData() async => true;
+
   @override
   Future<List<Currency>> getSupportedCurrencies() async => const [cup, usd];
 
@@ -131,7 +176,4 @@ class _UnknownCodeSource implements ExchangeRateDataSource {
   @override
   Future<List<CupPricePoint>> getCupPriceHistory() async =>
       throw StateError('boom');
-
-  @override
-  Future<CupPricePoint> refreshCupPrice() async => throw StateError('boom');
 }

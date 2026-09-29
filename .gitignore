@@ -49,3 +49,11 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# Secrets — never commit (Supabase keys, local env overrides).
+# Note: signing material (key.properties, *.jks, *.keystore) is already
+# covered by android/.gitignore.
+.env
+.env.*
+*.env
+!.env.example

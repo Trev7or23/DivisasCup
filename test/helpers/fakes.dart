@@ -56,8 +56,8 @@ class FakeExchangeRateRepository implements ExchangeRateRepository {
   }
 
   @override
-  Future<CupPricePoint> refreshCupPrice() async {
-    if (failOnSeries) throw StateError('boom');
-    return _delegate.refreshCupPrice();
+  Future<bool> hasCachedData() async {
+    if (failOnCurrencies) throw StateError('boom');
+    return _delegate.hasCachedData();
   }
 }

@@ -1,7 +1,7 @@
 # AGENTS.md
 
 DivisasCUP — Flutter (Android/iOS) app: local-first CUP price tracking, currency comparison & conversion.
-Clean Architecture, feature-first, fully offline (SQLite); Supabase is a future seam only.
+Clean Architecture, feature-first, fully offline (SQLite); the Supabase schema exists under `supabase/` but no Flutter wiring yet.
 Dev box: Flutter stable ~3.47.2, Dart ~3.13.
 
 ## Commands & verification gate
@@ -32,6 +32,7 @@ Dependency policy: minimal bumps only; after bumping anything, `flutter pub get 
 - The CUP price history is a `CupPricePoint` series: `FakeRates.series()` is a deterministic 90-point daily CUP-price series (`FakeRates.seriesDays`), seeded into the `cup_price_series` SQLite table (schema v2 — the upgrade migration purges `currencies`/`exchange_rates` and re-seeds them). `ExchangeRateRepository`/`ExchangeRateDataSource` add `getCurrentCupPrice`, `getCupPriceHistory`, `refreshCupPrice`; `refreshCupPrice()` upserts today's point (deterministic per-day jitter) and re-anchors the CUP→USD/MLC/EUR rows.
 - `fl_chart` is a direct dependency — it renders the price-history chart under `features/cup_price`.
 - `RemoteExchangeRateDataSource` (`.../datasources/remote_exchange_rate_data_source.dart`) is an intentionally unimplemented Supabase seam — don't wire it, and don't let domain/presentation reference it.
+- The `supabase/` project mirrors the seed for real: `currencies` (`sort_order` sets the default base = first row), `rates` (CUP-anchored `price_in_cup`; `numeric(15,6)`, client maps to `double`), `cup_price_series` (daily CUP/USD, `date` PK). Clients are `anon` SELECT-only; the `refresh_cup_price` RPC is `service_role`-only (a scheduled Edge Function cron will drive it). Its `seed.sql` replicates `FakeRates.seed`/`series()` — keep them in sync when the seed changes. Local apply: `supabase db reset` (re-runs migrations + seed from scratch).
 - Money is `double` (accepted simplification); user formatting goes through `CurrencyFormatter` (`lib/core/utils`).
 - One `ChangeNotifier` provider per screen, created from the repository in `lib/app.dart`; pages read via `context.watch`. Don't invent alternate provider wiring for test pumps.
 
